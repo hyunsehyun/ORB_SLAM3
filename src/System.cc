@@ -645,8 +645,8 @@ void System::SaveKeyFrameTrajectoryTUM(const string &filename)
 
        // pKF->SetPose(pKF->GetPose()*Two);
 
-        if(pKF->isBad())
-            continue;
+        // if(pKF->isBad())
+        //     continue;
 
         Sophus::SE3f Twc = pKF->GetPoseInverse();
         Eigen::Quaternionf q = Twc.unit_quaternion();
@@ -1324,6 +1324,7 @@ int System::GetTrackingState()
     return mTrackingState;
 }
 
+
 vector<MapPoint*> System::GetTrackedMapPoints()
 {
     unique_lock<mutex> lock(mMutexState);
@@ -1381,6 +1382,11 @@ void System::ChangeDataset()
 float System::GetImageScale()
 {
     return mpTracker->GetImageScale();
+}
+
+Sophus::SE3f System::GetCurrentCameraPose()
+{
+    return mpTracker->GetCurrentPose();
 }
 
 #ifdef REGISTER_TIMES
