@@ -4123,4 +4123,10 @@ void Tracking::Release()
 }
 #endif
 
+
+Sophus::SE3f Tracking::GetCurrentPose()
+{
+    return mCurrentFrame.GetPose();  // mTcw는 private이므로 getter 사용
+}
+
 } //namespace ORB_SLAM
