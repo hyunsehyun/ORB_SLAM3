@@ -80,6 +80,8 @@ public:
     void SetViewer(Viewer* pViewer);
     void SetStepByStep(bool bSet);
     bool GetStepByStep();
+    Sophus::SE3f GetCurrentPose();
+
 
     // Load new settings
     // The focal lenght should be similar or scale prediction will fail when projecting points
