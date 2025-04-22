@@ -1,184 +1,135 @@
-/**
-* This file is part of ORB-SLAM3
-*
-* Copyright (C) 2017-2021 Carlos Campos, Richard Elvira, Juan J. Gómez Rodríguez, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
-* Copyright (C) 2014-2016 Raúl Mur-Artal, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
-*
-* ORB-SLAM3 is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-* License as published by the Free Software Foundation, either version 3 of the License, or
-* (at your option) any later version.
-*
-* ORB-SLAM3 is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even
-* the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-* GNU General Public License for more details.
-*
-* You should have received a copy of the GNU General Public License along with ORB-SLAM3.
-* If not, see <http://www.gnu.org/licenses/>.
-*/
+#include <iostream>
+#include <fstream>
+#include <iomanip>
+#include <chrono>
+#include <vector>
+#include <string>
+#include <filesystem>
+#include <opencv2/core/core.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <Eigen/Dense>
+#include "System.h"
+#include <Eigen/Geometry>
 
-#include<iostream>
-#include<algorithm>
-#include<fstream>
-#include<chrono>
-
-#include<opencv2/core/core.hpp>
-
-#include<System.h>
-
+namespace fs = std::filesystem;
 using namespace std;
 
-void LoadImages(const string &strFile, vector<string> &vstrImageFilenames,
-                vector<double> &vTimestamps);
+void LoadImagesFromFolder(const string &folder, vector<string> &image_paths, vector<double> &timestamps, double fps);
 
 int main(int argc, char **argv)
 {
-    if(argc != 4)
+    if (argc != 4)
     {
-        cerr << endl << "Usage: ./mono_tum path_to_vocabulary path_to_settings path_to_sequence" << endl;
+        cerr << endl << "Usage: ./mono_tum path_to_vocabulary path_to_settings path_to_image_folder" << endl;
         return 1;
     }
 
-    // Retrieve paths to images
+    // Load image filenames and fake timestamps
     vector<string> vstrImageFilenames;
     vector<double> vTimestamps;
-    string strFile = string(argv[3])+"/rgb.txt";
-    LoadImages(strFile, vstrImageFilenames, vTimestamps);
+    string folder = string(argv[3]);
+
+    // Get FPS from yaml
+    cv::FileStorage fsSettings(argv[2], cv::FileStorage::READ);
+    if (!fsSettings.isOpened())
+    {
+        cerr << "ERROR: Wrong path to settings file" << endl;
+        return -1;
+    }
+    double fps = fsSettings["Camera.fps"];
+    LoadImagesFromFolder(folder, vstrImageFilenames, vTimestamps, fps);
 
     int nImages = vstrImageFilenames.size();
+    if (nImages == 0)
+    {
+        cerr << "ERROR: No images found in folder: " << folder << endl;
+        return -1;
+    }
 
-    // Create SLAM system. It initializes all system threads and gets ready to process frames.
-    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::MONOCULAR,true);
+    ORB_SLAM3::System SLAM(argv[1], argv[2], ORB_SLAM3::System::MONOCULAR, true);
     float imageScale = SLAM.GetImageScale();
 
-    // Vector for tracking time statistics
-    vector<float> vTimesTrack;
-    vTimesTrack.resize(nImages);
+    vector<float> vTimesTrack(nImages);
+    ofstream pose_file("AllFrameTrajectory.txt");
+    pose_file << fixed << setprecision(6);
 
-    cout << endl << "-------" << endl;
-    cout << "Start processing sequence ..." << endl;
-    cout << "Images in the sequence: " << nImages << endl << endl;
-
-    double t_resize = 0.f;
-    double t_track = 0.f;
-
-    // Main loop
-    cv::Mat im;
-    for(int ni=0; ni<nImages; ni++)
+    for (int ni = 0; ni < nImages; ni++)
     {
-        // Read image from file
-        im = cv::imread(string(argv[3])+"/"+vstrImageFilenames[ni],cv::IMREAD_UNCHANGED); //,cv::IMREAD_UNCHANGED);
+        string img_path = folder + "/" + vstrImageFilenames[ni];
+        cv::Mat im = cv::imread(img_path, cv::IMREAD_UNCHANGED);
         double tframe = vTimestamps[ni];
 
-        if(im.empty())
+        if (im.empty())
         {
-            cerr << endl << "Failed to load image at: "
-                 << string(argv[3]) << "/" << vstrImageFilenames[ni] << endl;
-            return 1;
+            cerr << "Failed to load image at: " << img_path << endl;
+            continue;
         }
 
-        if(imageScale != 1.f)
+        if (imageScale != 1.f)
         {
-#ifdef REGISTER_TIMES
-    #ifdef COMPILEDWITHC11
-            std::chrono::steady_clock::time_point t_Start_Resize = std::chrono::steady_clock::now();
-    #else
-            std::chrono::monotonic_clock::time_point t_Start_Resize = std::chrono::monotonic_clock::now();
-    #endif
-#endif
             int width = im.cols * imageScale;
             int height = im.rows * imageScale;
             cv::resize(im, im, cv::Size(width, height));
-#ifdef REGISTER_TIMES
-    #ifdef COMPILEDWITHC11
-            std::chrono::steady_clock::time_point t_End_Resize = std::chrono::steady_clock::now();
-    #else
-            std::chrono::monotonic_clock::time_point t_End_Resize = std::chrono::monotonic_clock::now();
-    #endif
-            t_resize = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(t_End_Resize - t_Start_Resize).count();
-            SLAM.InsertResizeTime(t_resize);
-#endif
         }
 
-#ifdef COMPILEDWITHC11
-        std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
-#else
-        std::chrono::monotonic_clock::time_point t1 = std::chrono::monotonic_clock::now();
-#endif
+        auto t1 = chrono::steady_clock::now();
+        SLAM.TrackMonocular(im, tframe);
+        auto t2 = chrono::steady_clock::now();
 
-        // Pass the image to the SLAM system
-        SLAM.TrackMonocular(im,tframe);
+        // Get pose after tracking
+        Sophus::SE3f Tcw = SLAM.GetCurrentCameraPose();
 
-#ifdef COMPILEDWITHC11
-        std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
-#else
-        std::chrono::monotonic_clock::time_point t2 = std::chrono::monotonic_clock::now();
-#endif
+        // identity pose와 비교하여 유효성 검사
+        if (!Tcw.matrix().isApprox(Sophus::SE3f().matrix()))
+        {
+            // SE3의 inverse → Twc
+            Sophus::SE3f Twc = Tcw.inverse();
 
-#ifdef REGISTER_TIMES
-            t_track = t_resize + std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(t2 - t1).count();
-            SLAM.InsertTrackTime(t_track);
-#endif
+            Eigen::Vector3f t = Twc.translation();            // 3D 위치
+            Eigen::Quaternionf q = Twc.unit_quaternion();     // 회전 → 쿼터니언
 
-        double ttrack= std::chrono::duration_cast<std::chrono::duration<double> >(t2 - t1).count();
+            pose_file << std::fixed << std::setprecision(6) << tframe << " "
+                    << std::setprecision(9)
+                    << t.x() << " " << t.y() << " " << t.z() << " "
+                    << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << std::endl;
+        }
+        double ttrack = chrono::duration_cast<chrono::duration<double>>(t2 - t1).count();
+        vTimesTrack[ni] = ttrack;
 
-        vTimesTrack[ni]=ttrack;
-
-        // Wait to load the next frame
-        double T=0;
-        if(ni<nImages-1)
-            T = vTimestamps[ni+1]-tframe;
-        else if(ni>0)
-            T = tframe-vTimestamps[ni-1];
-
-        if(ttrack<T)
-            usleep((T-ttrack)*1e6);
+        double T = (ni < nImages - 1) ? vTimestamps[ni + 1] - tframe : vTimestamps[ni] - vTimestamps[ni - 1];
+        if (ttrack < T)
+            usleep((T - ttrack) * 1e6);
     }
 
-    // Stop all threads
+    pose_file.close();
     SLAM.Shutdown();
 
-    // Tracking time statistics
-    sort(vTimesTrack.begin(),vTimesTrack.end());
-    float totaltime = 0;
-    for(int ni=0; ni<nImages; ni++)
-    {
-        totaltime+=vTimesTrack[ni];
-    }
-    cout << "-------" << endl << endl;
-    cout << "median tracking time: " << vTimesTrack[nImages/2] << endl;
-    cout << "mean tracking time: " << totaltime/nImages << endl;
-
-    // Save camera trajectory
-    SLAM.SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
+    sort(vTimesTrack.begin(), vTimesTrack.end());
+    float totaltime = accumulate(vTimesTrack.begin(), vTimesTrack.end(), 0.0f);
+    cout << "-------" << endl;
+    cout << "median tracking time: " << vTimesTrack[nImages / 2] << endl;
+    cout << "mean tracking time: " << totaltime / nImages << endl;
 
     return 0;
 }
 
-void LoadImages(const string &strFile, vector<string> &vstrImageFilenames, vector<double> &vTimestamps)
+void LoadImagesFromFolder(const string &folder, vector<string> &image_paths, vector<double> &timestamps, double fps)
 {
-    ifstream f;
-    f.open(strFile.c_str());
+    image_paths.clear();
+    timestamps.clear();
 
-    // skip first three lines
-    string s0;
-    getline(f,s0);
-    getline(f,s0);
-    getline(f,s0);
-
-    while(!f.eof())
+    for (const auto &entry : fs::directory_iterator(folder))
     {
-        string s;
-        getline(f,s);
-        if(!s.empty())
-        {
-            stringstream ss;
-            ss << s;
-            double t;
-            string sRGB;
-            ss >> t;
-            vTimestamps.push_back(t);
-            ss >> sRGB;
-            vstrImageFilenames.push_back(sRGB);
-        }
+        if (entry.path().extension() == ".jpg" || entry.path().extension() == ".png")
+            image_paths.push_back(entry.path().filename().string());
+    }
+
+    sort(image_paths.begin(), image_paths.end());
+
+    double timestamp = 0.0;
+    for (size_t i = 0; i < image_paths.size(); ++i)
+    {
+        timestamps.push_back(timestamp);
+        timestamp += 1.0 / fps;
     }
 }
