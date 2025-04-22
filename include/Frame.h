@@ -78,6 +78,8 @@ public:
 
     // Set the camera pose. (Imu pose is not modified!)
     void SetPose(const Sophus::SE3<float> &Tcw);
+    Sophus::SE3f GetPose() const { return mTcw; }
+
 
     // Set IMU velocity
     void SetVelocity(Eigen::Vector3f Vw);
@@ -141,10 +143,10 @@ public:
         return mRwc;
     }
 
-    inline Sophus::SE3<float> GetPose() const {
-        //TODO: can the Frame pose be accsessed from several threads? should this be protected somehow?
-        return mTcw;
-    }
+    // inline Sophus::SE3<float> GetPose() const {
+    //     //TODO: can the Frame pose be accsessed from several threads? should this be protected somehow?
+    //     return mTcw;
+    // }
 
     inline Eigen::Matrix3f GetRwc() const {
         return mRwc;
